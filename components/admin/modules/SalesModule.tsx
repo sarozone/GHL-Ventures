@@ -1225,14 +1225,22 @@ async function generateInvestmentDocument(
       clientPhone = basic.phone || c.phone || clientPhone
       clientPan = identity.pan_number || c.pan || ''
       clientGender = String(basic.gender || '').trim().toLowerCase()
-      const addressParts = [
-        basic.address,
-        identity.address,
-        identity.city || c.city,
-        identity.state,
-        identity.pincode,
-      ].filter((part: any) => part && String(part).trim().length > 0)
-      clientAddress = Array.from(new Set(addressParts.map((s: any) => String(s).trim()))).join(', ')
+      // Ack/AL draft format (change list 29-10-2026): address lines joined
+      // with ", " and the pincode attached as " - 600008" — e.g.
+      // "..., Edogawa-Ku, Tokyo - 134-0088". Trailing commas/full stops on
+      // each part are trimmed so the joins never double up.
+      const clean = (v: any) => String(v ?? '').trim().replace(/[,.\s]+$/, '')
+      const pin = clean(identity.pincode)
+      const parts: string[] = []
+      for (const raw of [basic.address, identity.address, identity.city || c.city, identity.state]) {
+        let part = clean(raw)
+        // Pincode typed inside the address text is pulled out and re-added at the end.
+        if (pin) part = clean(part.split(pin).join('').replace(/\s*[,\-]\s*(?=,|$)/g, ''))
+        // Skip a part already contained in what we have (duplicate address rows, city repeated).
+        if (part && !parts.some(p => p.toLowerCase().includes(part.toLowerCase()))) parts.push(part)
+      }
+      const addr = parts.join(', ')
+      clientAddress = pin ? (addr ? `${addr} - ${pin}` : pin) : addr
     }
   } catch { /* fall back to whatever the application row already had */ }
 
@@ -1358,15 +1366,17 @@ async function generateInvestmentDocument(
         .ack-body p{text-align:justify;}
         .ack-body p,.ack-body table{break-inside:avoid;page-break-inside:avoid;}
         .ack-head{margin:0 0 4px;}
-        .ack-addr{margin:0 0 18px;}
+        /* Draft format: narrow addressee block so the address wraps onto
+           short lines under the name, phone on its own last line. */
+        .ack-addr{margin:0 0 18px;max-width:85mm;line-height:1.45;}
         .ack-receipt{margin:30px 0;}
       </style>
       <body>
       <div class="ack-body">
-      <p class="ack-head" style="text-align:left;">Ref: [REF] <span style="float:right;">Date: [DATE]</span></p>
-      <p class="ack-addr" style="text-align:left;">[NAME],<br/>[ADDRESS]<br/>[PHONE]</p>
-      <p style="text-align:left;"><strong>Subject: Acknowledgement of investment receipt</strong></p>
-      <p style="text-align:left;">Dear [NAME],</p>
+      <p class="ack-head" style="text-align:left;">Ref : [REF] <span style="float:right;">Date : [ACK_DATE]</span></p>
+      <p class="ack-addr" style="text-align:left;">[SAL] [NAME],<br/>[ADDRESS]<br/>[PHONE]</p>
+      <p style="text-align:left;"><strong>Subject : Acknowledgement of investment receipt</strong></p>
+      <p style="text-align:left;">Dear [SAL] [NAME],</p>
       <p style="text-align:left;"><strong>Landmaxo Properties welcomes you to the new Dawn of Wealth Creation and prosperity</strong></p>
       <p>We are delighted to welcome you to <strong>Landmaxo Properties</strong>, where your financial aspirations take shape and transform into lasting success. By joining us, you have become an integral part of our <strong>prestigious family of visionary investors</strong> &mdash; individuals who believe in creating wealth with wisdom and foresight.</p>
       <p>Your decision to partner with Landmaxo Properties marks a <strong>powerful first step toward true financial freedom</strong>. Together, let us shape a future defined by prosperity, stability, and enduring success.</p>
@@ -1492,9 +1502,10 @@ async function generateInvestmentDocument(
         .da .p1{padding-left:28.45pt;}
         .da .stamp{height:150mm;}
         .da .lead{line-height:1.9;}
-        .da .sig{display:flex;margin-top:22pt;}
+        .da .sig{display:flex;justify-content:space-between;margin-top:22pt;}
         .da .sig .l{width:50%;}
-        .da .sig .r{width:32%;text-align:center;}
+        /* Investor block sits at the right margin (change list 29-10-2026). */
+        .da .sig .r{margin-left:auto;text-align:right;white-space:nowrap;}
         .da .sig .gap{height:44pt;}
         .da .cover{padding-top:66mm;}
         .da .cover p{margin:0;}
@@ -1729,6 +1740,8 @@ async function generateInvestmentDocument(
     .replace(/\[NAME\]/g, safeName)
     .replace(/\[EMAIL\]/g, safeEmail)
     .replace(/\[PHONE\]/g, safePhone)
+    // Ack letter header date in draft format "27-02-2026".
+    .replace(/\[ACK_DATE\]/g, escapeHtml((overrides?.date || '').trim() || shortDateDash))
     .replace(/\[DATE\]/g, escapeHtml((overrides?.date || '').trim() || longDateStr || dateStr))
     .replace(/\[ADDRESS\]/g, safeAddress)
     .replace(/\[AMOUNT\]/g, safeAmt)
