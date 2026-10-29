@@ -505,7 +505,7 @@ export default function ClientModule({ subTab, navigate, showToast }: ClientModu
           isOpen={profileModalOpen}
           onClose={() => { setProfileModalOpen(false); setSelectedClient(null) }}
           title={selectedClient.name}
-          subtitle={`${selectedClient.id} • Joined ${formatDate(selectedClient.joinDate)}`}
+          subtitle={`${partnerCode(selectedClient) || selectedClient.id} • Joined ${formatDate(selectedClient.joinDate)}`}
           maxWidth="max-w-3xl"
           footer={
             <>
@@ -1069,10 +1069,26 @@ function ClientListTab({
       <AdminDataTable<Client>
         columns={columns}
         data={clients}
-        searchKeys={['name', 'email', 'id', 'ghlId', 'pan', 'assignedRM']}
+        searchKeys={['name', 'email', 'phone', 'id', 'ghlId', 'pan', 'assignedRM']}
         searchPlaceholder="Search clients by name, ID, PAN..."
         onRowClick={onViewClient}
         exportable
+        // Export with GHL ID, email and phone (they are not visible columns).
+        // ' prefix keeps phone as text in Excel (leading 0 / +91 survive).
+        exportColumns={[
+          { label: 'GHL ID', value: (c) => partnerCode(c) },
+          { label: 'Name', value: (c) => c.name },
+          { label: 'Email', value: (c) => c.email || '' },
+          { label: 'Phone', value: (c) => (c.phone ? `'${c.phone}` : '') },
+          { label: 'PAN', value: (c) => c.pan || '' },
+          { label: 'KYC Status', value: (c) => c.kycStatus || '' },
+          { label: 'Account', value: (c) => c.accountStatus || '' },
+          { label: 'AUM', value: (c) => c.aum ?? 0 },
+          { label: 'Risk Profile', value: (c) => c.riskProfile || '' },
+          { label: 'Relationship Manager', value: (c) => c.assignedRM || '' },
+          { label: 'Joined', value: (c) => (c.joinDate ? formatDate(c.joinDate) : '') },
+        ]}
+        exportFileName={`clients_${new Date().toISOString().slice(0, 10)}`}
         title="All Clients"
         emptyMessage="No clients found"
       />

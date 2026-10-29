@@ -5,7 +5,7 @@ import {
   Shield, CheckCircle2, XCircle, Clock, AlertTriangle,
   Eye, FileText, Scale, History, Flag, ArrowUpRight,
   Filter, Search, Calendar, User, ChevronRight, AlertCircle,
-  Gavel, BookOpen, ShieldAlert, ShieldCheck,
+  Gavel, BookOpen, ShieldAlert, ShieldCheck, Download,
 } from 'lucide-react'
 import AdminGlass from '../shared/AdminGlass'
 import AdminDataTable, { type Column } from '../shared/AdminDataTable'
@@ -228,10 +228,53 @@ function KYCQueueTab({ kycQueue, showToast, onRefresh, initialStatusFilter }: { 
     if (!q) return filtered
     return filtered.filter(g => {
       const extra = (g.items[0] as any) || {}
-      return [g.clientName, g.clientEmail, g.clientId, extra.ghlId, extra.ghl_id, extra.clientPhone, extra.phone]
+      return [g.clientName, g.clientEmail, g.clientId, extra.clientCode, extra.ghlId, extra.ghl_id, extra.clientPhone, extra.phone]
         .some(v => typeof v === 'string' && v.toLowerCase().includes(q))
     })
   }, [filtered, kycSearch])
+
+  // CSV export of the clients shown (status tab + search applied): one row
+  // per client with every KYC step's status and the key KYC details.
+  const handleExport = () => {
+    if (searched.length === 0) { showToast('Nothing to export', 'warning'); return }
+    const step = (g: any, type: string) => g.items.find((i: any) => i.type === type)
+    const val = (g: any, type: string, ...keys: string[]) => {
+      const d = step(g, type)?.data || {}
+      for (const k of keys) if (d[k]) return String(d[k])
+      return ''
+    }
+    const txt = (v: string) => (v ? `'${v}` : '')   // keep as text in Excel
+    const headers = ['GHL ID', 'Name', 'Email', 'Phone', 'Overall KYC', 'Basic Details', 'Identity Details',
+      'Bank Details', 'Demat Account', 'Nominee Details', 'PAN', 'Aadhaar', 'Bank Name', 'Account No', 'IFSC', 'Last Updated']
+    const rows = searched.map((g: any) => {
+      const first: any = g.items[0] || {}
+      return [
+        first.clientCode || '', g.clientName, g.clientEmail || first.clientEmail || '', txt(first.clientPhone || ''),
+        first.clientKycStatus || '',
+        step(g, 'Basic Details')?.status || '-',
+        step(g, 'Identity Details')?.status || '-',
+        step(g, 'Bank Details')?.status || '-',
+        step(g, 'Demat Account')?.status || '-',
+        step(g, 'Nominee Details')?.status || '-',
+        val(g, 'Identity Details', 'pan_number', 'pan'),
+        txt(val(g, 'Identity Details', 'aadhar_number', 'aadhaar_number')),
+        val(g, 'Bank Details', 'bank_name'),
+        txt(val(g, 'Bank Details', 'account_number')),
+        val(g, 'Bank Details', 'ifsc_code', 'ifsc'),
+        g.latest ? new Date(g.latest).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '',
+      ]
+    })
+    const cell = (c: unknown) => `"${String(c ?? '').replace(/"/g, '""')}"`
+    const csv = [headers, ...rows].map(r => r.map(cell).join(',')).join('\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `kyc_${statusFilter}_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    showToast(`Exported ${searched.length} client${searched.length === 1 ? '' : 's'}`, 'success')
+  }
 
   const pendingCount = kycQueue.filter(k => k.status === 'submitted' || k.status === 'pending').length
   // 2026-05-16: the badge labels the cohort that's awaiting decisions, so it only
@@ -300,13 +343,21 @@ function KYCQueueTab({ kycQueue, showToast, onRefresh, initialStatusFilter }: { 
             <input
               value={kycSearch}
               onChange={e => setKycSearch(e.target.value)}
-              placeholder="Search by name, email or ID..."
+              placeholder="Search name, GHL ID, email, phone..."
               className="w-56 pl-9 pr-8 py-1.5 rounded-lg text-xs bg-white/[0.03] border border-white/[0.06] text-white placeholder-gray-500 focus:outline-none focus:border-brand-red/40"
             />
             {kycSearch && (
               <button onClick={() => setKycSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs" title="Clear">x</button>
             )}
           </div>
+          <button
+            onClick={handleExport}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.08] hover:text-white transition-colors"
+            title="Export the clients shown (tab + search) as CSV"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export
+          </button>
         {showPendingBadge && pendingCount > 0 && (
           <span className="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30">
             {pendingCount} pending review
@@ -333,7 +384,13 @@ function KYCQueueTab({ kycQueue, showToast, onRefresh, initialStatusFilter }: { 
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold text-white">{group.clientName}</h3>
-                    {group.clientEmail && <p className="text-[11px] text-gray-400">{group.clientEmail}</p>}
+                    {((group.items[0] as any)?.clientCode || group.clientEmail) && (
+                      <p className="text-[11px] text-gray-400">
+                        {(group.items[0] as any)?.clientCode && <span className="font-mono text-gray-300">{(group.items[0] as any).clientCode}</span>}
+                        {(group.items[0] as any)?.clientCode && group.clientEmail && ' · '}
+                        {group.clientEmail}
+                      </p>
+                    )}
                     <p className="text-[11px] text-gray-500">{group.items.length} KYC step(s) submitted</p>
                   </div>
                 </div>

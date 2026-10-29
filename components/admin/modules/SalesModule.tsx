@@ -2390,7 +2390,25 @@ function InvestmentsTab({ showToast, statusFilter }: { showToast: (m: string, t?
               : 'No investment applications'
             return <AdminEmptyState icon={BarChart3} title={emptyLabel} description="Investment applications from clients will appear here." />
           }
-          return <AdminDataTable columns={columns} data={scoped} onRowClick={(row) => { setSelectedApp(row); setDetailOpen(true) }} />
+          // AdminDataTable searches/exports top-level keys only; the client
+          // fields live under `_client`, so searching a name found nothing.
+          // Copy them onto the row (columns read the same keys).
+          const tableRows = scoped.map(a => ({
+            ...a,
+            client: a._client?.full_name || a._client?.email || '',
+            client_code: a._client?.client_code || '',
+            email: a._client?.email || '',
+            phone: a._client?.phone || '',
+          }))
+          return (
+            <AdminDataTable
+              columns={columns}
+              data={tableRows}
+              searchKeys={['client', 'client_code', 'email', 'phone', 'fund_vehicle', 'status', 'reference_number']}
+              searchPlaceholder="Search name, GHL ID, email, phone..."
+              onRowClick={(row) => { setSelectedApp(row); setDetailOpen(true) }}
+            />
+          )
         })()}
       </AdminGlass>
 

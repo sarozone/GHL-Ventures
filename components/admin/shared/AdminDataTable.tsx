@@ -23,6 +23,10 @@ interface AdminDataTableProps<T> {
   onRowClick?: (row: T) => void
   emptyMessage?: string
   exportable?: boolean
+  // Optional explicit CSV layout. Without it the export uses the visible
+  // columns' keys (which misses data that only lives in a render()).
+  exportColumns?: { label: string; value: (row: T) => unknown }[]
+  exportFileName?: string
   title?: string
   actions?: React.ReactNode
 }
@@ -44,6 +48,8 @@ export default function AdminDataTable<T extends Record<string, any>>({
   // Export button without each call-site opting in. Pass exportable={false} to
   // hide it on a specific table. Search is likewise on by default (searchable).
   exportable = true,
+  exportColumns,
+  exportFileName,
   title,
   actions,
 }: AdminDataTableProps<T>) {
@@ -101,16 +107,15 @@ export default function AdminDataTable<T extends Record<string, any>>({
   }
 
   const handleExport = async () => {
-    const headers = columns.map(c => c.label).join(',')
-    const rows = sorted.map(row =>
-      columns.map(c => {
-        const val = row[c.key]
-        return typeof val === 'string' && val.includes(',') ? `"${val}"` : String(val ?? '')
-      }).join(',')
-    ).join('\n')
+    const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`
+    const layout = exportColumns && exportColumns.length > 0
+      ? exportColumns
+      : columns.filter(c => c.label).map(c => ({ label: c.label, value: (row: T) => row[c.key] }))
+    const headers = layout.map(c => cell(c.label)).join(',')
+    const rows = sorted.map(row => layout.map(c => cell(c.value(row))).join(',')).join('\n')
     const bom = '\uFEFF'
     const blob = new Blob([`${bom}${headers}\n${rows}`], { type: 'text/csv;charset=utf-8' })
-    await saveBlobAs(blob, `${title || 'export'}.csv`)
+    await saveBlobAs(blob, `${exportFileName || title || 'export'}.csv`)
   }
 
   return (

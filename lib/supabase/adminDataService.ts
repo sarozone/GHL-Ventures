@@ -430,7 +430,7 @@ export async function fetchKYCDocuments() {
   // Bug #8: order by most recently updated first so newest KYCs surface at the top.
   try {
     const { data: clients } = await sb.from('clients')
-      .select('id, full_name, email, phone, kyc_status, kyc_step, kyc_rejection_reason, kyc_rejected_at, updated_at, created_at')
+      .select('id, full_name, email, phone, client_code, ghl_id, kyc_status, kyc_step, kyc_rejection_reason, kyc_rejected_at, updated_at, created_at')
       .in('kyc_status', ['submitted', 'pending', 'rejected', 'verified', 'approved'])
       .order('updated_at', { ascending: false })
     if (!clients || clients.length === 0) return []
@@ -549,6 +549,14 @@ export async function fetchKYCDocuments() {
           data: c,
         })
       }
+    }
+    // GHL ID + phone on every item so the KYC tab can search/export by them.
+    const clientInfoMap = new Map(clients.map((c: any) => [c.id, { code: c.ghl_id || c.client_code || '', phone: c.phone || '' }]))
+    for (const k of kycItems) {
+      const info = clientInfoMap.get(k.clientId) as { code: string; phone: string } | undefined
+      k.clientCode = info?.code || ''
+      k.clientPhone = info?.phone || ''
+      if (!k.clientEmail) k.clientEmail = clientEmailMap.get(k.clientId) || ''
     }
     return kycItems
   } catch (err) {
