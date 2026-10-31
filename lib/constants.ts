@@ -24,6 +24,11 @@ export const BRAND = {
   // for the Contact page card.
   delhiAddress:
     'I-Thum Tower, Tower B, Unit no. 317, 3rd Floor, Plot no. A-40, Sector-62, Noida 201301, Delhi NCR',
+  // Branch offices added 31-10-2026 (from the ghlindia.com contact cards).
+  coimbatoreAddress:
+    'Sri Shanmugaa Towers, 51, 9th Street, Tatabad, Coimbatore \u2013 641 012, Tamil Nadu, India',
+  bangaloreAddress:
+    'A2, SPL Habitat, (19/11 Hudin Road) No. 138, Gangadhar Chetty Road, Ulsoor, Halasuru, Bangalore, Karnataka \u2013 560 042, India',
   officeHours: 'Mon \u2013 Sat \u2013 10.00AM \u2013 6.30PM IST',
   minInvestment: 'As per SEBI AIF Regulations',
   colors: {

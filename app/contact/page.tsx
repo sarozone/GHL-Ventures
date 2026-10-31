@@ -131,6 +131,31 @@ export default function ContactPage() {
                     </div>
                   </div>
 
+                  {/* Branch offices added 31-10-2026: Coimbatore + Bangalore. */}
+                  <div className="flex items-start space-x-4">
+                    <div className="w-12 h-12 bg-brand-red/10 rounded-xl flex items-center justify-center shrink-0 icon-ring-hover">
+                      <MapPin className="w-6 h-6 text-brand-red" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-brand-black dark:text-white text-base mb-1">Coimbatore (Branch Office)</h3>
+                      <p className="text-brand-grey dark:text-gray-300 text-sm leading-relaxed">
+                        {BRAND.coimbatoreAddress}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-4">
+                    <div className="w-12 h-12 bg-brand-red/10 rounded-xl flex items-center justify-center shrink-0 icon-ring-hover">
+                      <MapPin className="w-6 h-6 text-brand-red" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-brand-black dark:text-white text-base mb-1">Bangalore (Branch Office)</h3>
+                      <p className="text-brand-grey dark:text-gray-300 text-sm leading-relaxed">
+                        {BRAND.bangaloreAddress}
+                      </p>
+                    </div>
+                  </div>
+
                   {/* Phone */}
                   <div className="flex items-start space-x-4">
                     <div className="w-12 h-12 bg-brand-red/10 rounded-xl flex items-center justify-center shrink-0 icon-ring-hover">
