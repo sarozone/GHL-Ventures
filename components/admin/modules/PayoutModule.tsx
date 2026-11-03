@@ -598,13 +598,23 @@ export default function PayoutModule({ subTab, navigate, showToast }: PayoutModu
     // Venture Dashboard Changes #14: prefix long numeric identifiers with an
     // apostrophe so Excel treats them as text instead of mangling them into
     // scientific notation (e.g. 9.1234E+11) or dropping leading zeros.
-    const TEXT_COLS = new Set(['Account Number'])
+    const TEXT_COLS = new Set(['Account Number', 'Phone', 'Aadhar'])
+    // Change list 03-11-2026: strip the "special characters" that showed up
+    // in Excel (e.g. "AÂ Arundhati"). Names/addresses typed on phones carry
+    // non-breaking spaces and zero-width marks; normalise those to plain
+    // spaces and drop control / invisible characters.
+    const clean = (v: any) => String(v ?? '')
+      .normalize('NFKC')
+      .replace(/[\s\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]+/g, ' ')
+      .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\u2060\uFEFF\uFFFD]/g, '')
+      .replace(/ {2,}/g, ' ')
+      .trim()
     const asText = (v: any) => {
-      const str = String(v ?? '')
-      return str && str !== '-' && /^[0-9]+$/.test(str) ? `'${str}` : str
+      const str = clean(v).replace(/\s/g, '')
+      return str && str !== '-' && /^\+?[0-9]+$/.test(str) ? `'${str}` : str
     }
-    const body = rows.map(r => r.map((c, i) => (TEXT_COLS.has(headers[i]) ? asText(c) : c)))
-    return [headers, ...body].map(r => r.map(c => `"${c}"`).join(',')).join('\n')
+    const body = rows.map(r => r.map((c, i) => (TEXT_COLS.has(headers[i]) ? asText(c) : clean(c))))
+    return [headers, ...body].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
   }
 
   // Pending 30-04-2026 follow-up: export now respects a scope selector
@@ -641,11 +651,14 @@ export default function PayoutModule({ subTab, navigate, showToast }: PayoutModu
 
     if (format === 'csv' || format === 'excel') {
       const csv = generateCSV(data)
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+      // UTF-8 BOM so Excel reads the file as UTF-8 (without it Excel shows
+      // "Â" / "â€" junk). Always .csv — the data is CSV, and a .xlsx name made
+      // Excel warn that the file format and extension don't match.
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `payouts_${labelSuffix}.${format === 'excel' ? 'xlsx' : 'csv'}`
+      a.download = `payouts_${labelSuffix}.csv`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)

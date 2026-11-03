@@ -15,7 +15,7 @@
 
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   User, Fingerprint, Landmark, CreditCard, Users, Upload, Eye,
   CheckCircle, Loader2, AlertCircle, Trash2, Plus, ChevronRight, ChevronLeft,
@@ -68,10 +68,27 @@ interface Props {
   initialPhone?: string
   showToast: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void
   onComplete?: () => void
+  // Edit mode (KYC Approved → Edit on a single step card): opens on that
+  // step, keeps each table's existing review status (an approved step
+  // stays approved after a correction) and stays on the step after save.
+  initialStage?: StageId
+  editMode?: boolean
 }
 
-export default function AdminAddKYCModal({ clientId, userId, initialName, initialEmail, initialPhone, showToast, onComplete }: Props) {
-  const [activeStage, setActiveStage] = useState<StageId>('basic')
+export default function AdminAddKYCModal({ clientId, userId, initialName, initialEmail, initialPhone, showToast, onComplete, initialStage, editMode }: Props) {
+  const [activeStage, setActiveStage] = useState<StageId>(initialStage || 'basic')
+  // Existing review status + user_id per KYC table, captured on preload.
+  const prevStatus = useRef<Record<string, string>>({})
+  const existingUserId = useRef<string | null>(null)
+  const uid = () => userId || existingUserId.current
+  const afterSave = async (table: string, next: StageId) => {
+    if (!editMode) { setActiveStage(next); return }
+    const prev = prevStatus.current[table]
+    if (prev && prev !== 'submitted') {
+      await (supabase as any).from(table).update({ status: prev }).eq('client_id', clientId)
+    }
+    onComplete?.()
+  }
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -134,6 +151,11 @@ export default function AdminAddKYCModal({ clientId, userId, initialName, initia
         sb.from('kyc_demat_details').select('*').eq('client_id', clientId).maybeSingle(),
       ])
       const bd = b?.data; const id = i?.data; const bkd = bk?.data; const dmd = dm?.data
+      prevStatus.current = {
+        kyc_basic_details: bd?.status || '', kyc_identity_details: id?.status || '',
+        kyc_bank_details: bkd?.status || '', kyc_demat_details: dmd?.status || '',
+      }
+      existingUserId.current = bd?.user_id || id?.user_id || bkd?.user_id || dmd?.user_id || null
       if (bd) setBasic({
         investor_name: bd.investor_name || initialName || '',
         phone: bd.phone || initialPhone || '',
@@ -204,9 +226,9 @@ export default function AdminAddKYCModal({ clientId, userId, initialName, initia
     }
     setErrors({})
     setSaving(true)
-    const result = await upsertKYCBasicDetails(clientId, userId, { ...basic, email_verified: true })
+    const result = await upsertKYCBasicDetails(clientId, uid(), { ...basic, email_verified: true })
     setSaving(false)
-    if (result) { showToast('Basic details saved', 'success'); setActiveStage('identity') }
+    if (result) { showToast('Basic details saved', 'success'); await afterSave('kyc_basic_details', 'identity') }
     else showToast('Failed to save basic details', 'error')
   }
 
@@ -239,12 +261,12 @@ export default function AdminAddKYCModal({ clientId, userId, initialName, initia
     }
     setErrors({})
     setSaving(true)
-    const result = await upsertKYCIdentityDetails(clientId, userId, {
+    const result = await upsertKYCIdentityDetails(clientId, uid(), {
       ...identity,
       aadhar_doc_url: aadharDocUrl, pan_doc_url: panDocUrl, passport_doc_url: passportDocUrl,
     })
     setSaving(false)
-    if (result) { showToast('Identity details saved', 'success'); setActiveStage('bank') }
+    if (result) { showToast('Identity details saved', 'success'); await afterSave('kyc_identity_details', 'bank') }
     else showToast('Failed to save identity details', 'error')
   }
 
@@ -267,20 +289,20 @@ export default function AdminAddKYCModal({ clientId, userId, initialName, initia
     }
     setErrors({})
     setSaving(true)
-    const result = await upsertKYCBankDetails(clientId, userId, {
+    const result = await upsertKYCBankDetails(clientId, uid(), {
       ...bank, ifsc_code: bank.ifsc_code.toUpperCase(), bank_doc_url: bankDocUrl,
     })
     setSaving(false)
-    if (result) { showToast('Bank details saved', 'success'); setActiveStage('demat') }
+    if (result) { showToast('Bank details saved', 'success'); await afterSave('kyc_bank_details', 'demat') }
     else showToast('Failed to save bank details', 'error')
   }
 
   const saveDemat = async (skip: boolean) => {
     if (skip) {
       setSaving(true)
-      const result = await upsertKYCDematDetails(clientId, userId, { demat_account_number: '', demat_doc_url: '', skipped: true })
+      const result = await upsertKYCDematDetails(clientId, uid(), { demat_account_number: '', demat_doc_url: '', skipped: true })
       setSaving(false)
-      if (result) { showToast('Demat step skipped', 'success'); setActiveStage('nominee') }
+      if (result) { showToast('Demat step skipped', 'success'); await afterSave('kyc_demat_details', 'nominee') }
       else showToast('Failed to save demat details', 'error')
       return
     }
@@ -292,9 +314,9 @@ export default function AdminAddKYCModal({ clientId, userId, initialName, initia
     }
     setErrors({})
     setSaving(true)
-    const result = await upsertKYCDematDetails(clientId, userId, { ...demat, demat_doc_url: dematDocUrl, skipped: false })
+    const result = await upsertKYCDematDetails(clientId, uid(), { ...demat, demat_doc_url: dematDocUrl, skipped: false })
     setSaving(false)
-    if (result) { showToast('Demat details saved', 'success'); setActiveStage('nominee') }
+    if (result) { showToast('Demat details saved', 'success'); await afterSave('kyc_demat_details', 'nominee') }
     else showToast('Failed to save demat details', 'error')
   }
 
@@ -319,7 +341,7 @@ export default function AdminAddKYCModal({ clientId, userId, initialName, initia
     if (editingNomineeId) {
       await updateNominee(editingNomineeId, { ...nomineeForm, phone: phoneDigits, percentage: pct, proof_url: nomineeProofUrl })
     } else {
-      await addNominee(clientId, userId, { ...nomineeForm, phone: phoneDigits, percentage: pct, proof_url: nomineeProofUrl })
+      await addNominee(clientId, uid(), { ...nomineeForm, phone: phoneDigits, percentage: pct, proof_url: nomineeProofUrl })
     }
     setSaving(false)
     setNomineeForm({ name: '', dob: '', phone: '', relationship: '', percentage: '' })

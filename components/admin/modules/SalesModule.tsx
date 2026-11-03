@@ -1166,12 +1166,63 @@ function LeadDetailContent({ lead }: { lead: Lead }) {
 // textarea. Tokens substitute on generate. When the admin leaves it
 // untouched, the original HTML body (with its <strong> emphasis) is used so
 // the default letter stays byte-identical to the pre-form output.
-const ALLOT_DEFAULT_BODY = `This is with reference to your Investment, I am directed by the Board of Directors to inform you that you have been allotted [NUM_DEB] [FUND] of Rs.10/- each. The tenure of debentures is for [TENURE].
+const ALLOT_DEFAULT_BODY = `This is with reference to your Investment, I am directed by the Board of Directors to inform you that you have been allotted [NUM_DEB] [FUND] of Rs.10/- each. The tenure of debentures is for [TENURE_WORDS].
 
-These debentures are allotted to you as per the resolution passed at the Board meeting held on [DATE] and as per the terms and conditions of Articles of Association of the company.`
+These debentures are allotted to you as per the resolution passed at the Board meeting held on [MEETING_DATE] and as per the terms and conditions of Articles of Association of the company.`
 
-const ALLOT_DEFAULT_BODY_HTML = `<p>This is with reference to your Investment, I am directed by the Board of Directors to inform you that you have been allotted <strong>[NUM_DEB] [FUND]</strong> of Rs.10/- each. The tenure of debentures is for [TENURE].</p>
-      <p>These debentures are allotted to you as per the resolution passed at the Board meeting held on [DATE] and as per the terms and conditions of Articles of Association of the company.</p>`
+const ALLOT_DEFAULT_BODY_HTML = `<p>This is with reference to your Investment, I am directed by the Board of Directors to inform you that you have been allotted [NUM_DEB] [FUND] of Rs.10/- each. The tenure of debentures is for [TENURE_WORDS].</p>
+      <p>These debentures are allotted to you as per the resolution passed at the Board meeting held on [MEETING_DATE] and as per the terms and conditions of Articles of Association of the company.</p>`
+
+// Change list 03-11-2026: Allotment Letter + Debenture Certificate use the
+// numbers already recorded by Documents → Allotment (allotments +
+// debenture_certificates) — folio "D0009", distinctive range and certificate
+// number — instead of values derived from the row id. Returns null when the
+// investment has not been allotted yet (letters then fall back to defaults).
+type AllotmentLookup = {
+  folio: string
+  disFrom: number
+  disTo: number
+  numDeb: number
+  amount: number
+  certNo: string
+  allotmentDate: string
+}
+async function lookupAllotmentRecord(app: any): Promise<AllotmentLookup | null> {
+  if (!app?.id) return null
+  try {
+    const { supabase: sb } = await import('@/lib/supabase/client')
+    const sbAny: any = sb
+    const { data } = await sbAny
+      .from('allotments')
+      .select('id, folio_number, dis_from, dis_to, no_of_debentures, investment_amount, allotment_date, created_at')
+      .or(`investment_id.eq.${app.id},investment_ids.cs.{${app.id}}`)
+      .order('created_at', { ascending: false })
+      .limit(1)
+    const a = data?.[0]
+    if (!a) return null
+    let certNo = ''
+    try {
+      const { data: dc } = await sbAny.from('debenture_certificates')
+        .select('certificate_number').eq('allotment_id', a.id).limit(1)
+      certNo = dc?.[0]?.certificate_number || ''
+    } catch { /* no certificate issued yet */ }
+    return {
+      folio: a.folio_number || '',
+      disFrom: Number(a.dis_from) || 0,
+      disTo: Number(a.dis_to) || 0,
+      numDeb: Number(a.no_of_debentures) || 0,
+      amount: Number(a.investment_amount) || 0,
+      certNo,
+      allotmentDate: a.allotment_date || a.created_at || '',
+    }
+  } catch { return null }
+}
+
+// "3 years" → "three years" (letters spell the tenure out).
+function tenureInWords(t: string): string {
+  const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve']
+  return String(t || '').replace(/\b(\d{1,2})\b/, (m) => words[Number(m)] ?? m).toLowerCase()
+}
 
 async function generateInvestmentDocument(
   type: 'acknowledgement' | 'allotment' | 'certificate' | 'agreement',
@@ -1183,6 +1234,7 @@ async function generateInvestmentDocument(
   // byte-identical to before.
   overrides?: {
     date?: string
+    dateIso?: string
     folio?: string
     numDebentures?: string
     distinctiveFrom?: string
@@ -1283,8 +1335,12 @@ async function generateInvestmentDocument(
     const fyCode = `${String(startYear).slice(-2)}${String(startYear + 1).slice(-2)}`
     return `GHLVEN/100/${fyCode}`
   })()
-  const folioNo = (overrides?.folio || '').trim() || `D${(app.id || '').replace(/-/g,'').slice(0,4).toUpperCase()}`
-  const certNo = `${(app.id || '').replace(/-/g,'').slice(0, 3).toUpperCase()}`
+  const allotRec = (type === 'allotment' || type === 'certificate') ? await lookupAllotmentRecord(app) : null
+  // Distinctive range from the allotment only when it covers exactly this
+  // investment's debentures (an allotment can aggregate several investments).
+  const allotRangeMatches = !!allotRec && allotRec.disFrom > 0 && allotRec.numDeb === numDebentures
+  const folioNo = (overrides?.folio || '').trim() || app.folio_number || allotRec?.folio || `D${(app.id || '').replace(/-/g,'').slice(0,4).toUpperCase()}`
+  const certNo = allotRec?.certNo || `${(app.id || '').replace(/-/g,'').slice(0, 3).toUpperCase()}`
   const tenure = (overrides?.tenure || '').trim() || app.tenure_preference || '3 years'
 
   const css = `<style>
@@ -1392,22 +1448,37 @@ async function generateInvestmentDocument(
       </div>
       </body>`,
 
-    allotment: `${css}<body>
+    // Change list 03-11-2026: Allotment Letter in the Landmaxo draft format —
+    // "Date : 19-03-2026", narrow addressee block with Mr./Ms., "Subject :"
+    // line, Board-meeting date as "19th of March, 2026", tenure in words and
+    // a fully centred details table.
+    allotment: `${css}
+      <style>
+        .al{padding:10px 24px;font-size:12.5px;line-height:1.55;}
+        .al p{margin:0 0 12px;text-align:justify;}
+        .al .al-to{text-align:left;margin:0 0 6px;}
+        .al .al-addr{max-width:85mm;line-height:1.45;text-align:left;margin:0 0 26px;}
+        .al .al-subj{text-align:center;font-weight:700;margin:0 0 22px;}
+        .al table{margin:6px 0 14px;font-size:11px;}
+        .al table th,.al table td{text-align:center;vertical-align:middle;padding:6px 6px;}
+        .al .al-note{text-align:center;margin-top:18px;}
+      </style>
+      <body><div class="al">
       [LOGO_ALLOT]
-      <p>To <span style="float:right;">Date: [DATE]</span></p>
-      <p><strong>[NAME]</strong>,<br/>[ADDRESS]</p>
-      <p class="center bold">Subject: Allotment of [FUND]</p>
-      <p>Dear [NAME],</p>
+      <p class="al-to">To <span style="float:right;">Date : [ALLOT_DATE]</span></p>
+      <p class="al-addr">[SAL] [NAME],<br/>[ADDRESS]</p>
+      <p class="al-subj">Subject : Allotment of [FUND]</p>
+      <p style="text-align:left;">Dear [SAL] [NAME],</p>
       [BODY_ALLOT]
-      <p>Details of allotment are as follows:</p>
-      <table style="font-size:10px;">
+      <p style="text-align:left;">Details of allotment are as follows:</p>
+      <table>
         <tr>
-          <th rowspan="2">Folio No</th>
-          <th rowspan="2">No Of Debentures</th>
+          <th rowspan="2">Folio<br/>No</th>
+          <th rowspan="2">No Of<br/>Debentures</th>
           <th colspan="2">Distinctive Nos.</th>
-          <th rowspan="2">Amount Received in Rs</th>
+          <th rowspan="2">Amount<br/>Received in<br/>Rs</th>
           <th rowspan="2">Fund Type</th>
-          <th rowspan="2">Rate Of Interest</th>
+          <th rowspan="2">Rate Of<br/>Interest</th>
           <th rowspan="2">Tenure</th>
         </tr>
         <tr><th>From</th><th>To</th></tr>
@@ -1417,62 +1488,89 @@ async function generateInvestmentDocument(
           <td>[DIST_FROM_ALLOT]</td>
           <td>[DIST_TO_ALLOT]</td>
           <td>[AMOUNT]</td>
-          <td style="font-size:9px;">[FUND]</td>
+          <td style="font-size:10px;">[FUND]</td>
           <td>[RATE_ALLOT]</td>
           <td>[TENURE]</td>
         </tr>
       </table>
-      <p class="mt">Duly signed and executed debenture certificate will be sent to you.</p>
-      <p class="mt center"><em>* This is a computer generated document and does not require signature. *</em></p>
+      <p style="text-align:left;">Duly signed and executed debenture certificate will be sent to you.</p>
+      <p class="al-note">* This is a computer generated document and does not require signature. *</p>
       [FOOTER_ADDR_ALLOT]
-      </body>`,
+      </div></body>`,
 
+    // Change list 03-11-2026: Debenture Certificate in the Landmaxo
+    // certificate design — maroon/black ribbon bands top and bottom,
+    // LANDMAXO mark, company block, black nominal-value band, folio /
+    // certificate number, holder details and Director / Director /
+    // Authorised Signatory signature space.
     certificate: `${css}
       <style>
-        /* 2026-05-19: handwritten review — no logo (text mark removed),
-           30px padding on the certificate body, dynamic distinctive range
-           and folio/cert numbers, justified prose block. The double-gold
-           border and company seal placeholder are retained because they
-           define the certificate look. */
-        .cert-border{border:4px double #C8A951;padding:30px;margin:10px;background:#fff;}
-        .cert-title{text-align:center;font-size:24px;font-weight:800;letter-spacing:3px;margin-bottom:8px;color:#333;}
-        .cert-company{text-align:center;font-size:18px;font-weight:700;margin-bottom:4px;}
-        .cert-sub{text-align:center;font-size:10px;color:#555;margin-bottom:30px;}
-        .cert-body{line-height:1.8;font-size:12px;}
-        .cert-body p{text-align:justify;}
-        .cert-highlight{text-align:center;background:#f8f8f0;border:1px solid #C8A951;padding:12px;margin:18px 0;font-weight:700;font-size:13px;}
-        .cert-fields td{padding:8px 14px;font-size:12px;border:none;vertical-align:top;}
-        .cert-fields td:first-child{color:#666;width:220px;}
+        @page{size:A4;margin:8mm;}
+        .dc{position:relative;max-width:190mm;min-height:262mm;margin:0 auto;padding:0 14mm 20mm;
+            border-left:3px solid #2b2b2b;border-right:3px solid #2b2b2b;background:#fff;
+            font-family:'Open Sans','Segoe UI',Arial,sans-serif;color:#111;box-sizing:border-box;
+            -webkit-print-color-adjust:exact;print-color-adjust:exact;}
+        .dc .band{height:15mm;margin:0 -14mm;position:relative;overflow:hidden;
+            background:linear-gradient(180deg,#1a0505 0%,#6e0f0f 45%,#9b1c1c 55%,#2a0606 100%);}
+        .dc .band::after{content:'';position:absolute;left:12%;right:12%;height:9mm;border-radius:0 0 50% 50%/0 0 100% 100%;
+            background:linear-gradient(180deg,#ffffff 0%,#f1e3e3 100%);}
+        .dc .band.top::after{top:-1mm;opacity:.0;}
+        .dc .band.top{border-radius:0 0 8mm 8mm;}
+        .dc .band.bottom{position:absolute;left:0;right:0;bottom:0;margin:0;border-radius:8mm 8mm 0 0;}
+        .dc .band::before{content:'';position:absolute;left:18%;right:18%;top:3mm;height:6mm;border-radius:6mm;
+            background:linear-gradient(180deg,rgba(255,255,255,.15),rgba(255,255,255,0));}
+        .dc h1{font-size:25pt;font-weight:800;text-align:center;letter-spacing:1px;margin:7mm 0 4mm;}
+        .dc .mark{text-align:center;margin-bottom:4mm;}
+        .dc .mark .w{font-size:24pt;font-weight:800;letter-spacing:5px;color:#4a8a2c;font-family:Arial,sans-serif;}
+        .dc .mark .w span{color:#E8A317;}
+        .dc .mark .t{font-size:7.5pt;color:#888;letter-spacing:2px;margin-top:-2px;}
+        .dc .co{text-align:center;font-size:17pt;font-weight:800;margin:0 0 1.5mm;}
+        .dc .cin{text-align:center;font-size:8pt;font-weight:700;line-height:1.45;margin-bottom:5mm;}
+        .dc .certify{font-size:9.5pt;font-weight:700;line-height:1.5;text-align:justify;margin:0 0 5mm;}
+        .dc .black{background:#151515;color:#fff;text-align:center;font-weight:700;font-size:11pt;line-height:1.55;
+            padding:3mm 4mm;margin:0 -14mm 6mm;}
+        .dc .row{display:flex;justify-content:space-between;font-size:9.5pt;font-weight:700;margin:0 4mm 5mm;}
+        .dc .rows{margin:0 4mm;font-size:9.5pt;}
+        .dc .rows .r{display:flex;align-items:flex-start;margin-bottom:2.2mm;}
+        .dc .rows .k{width:52mm;font-weight:700;line-height:1.3;}
+        .dc .rows .v{flex:1;font-weight:700;}
+        .dc .rows .v.u{border-bottom:1px dotted #555;padding-bottom:1px;}
+        .dc .rows .r.name{margin-bottom:5mm;}
+        .dc .rule{border-top:1.5px solid #222;margin:5mm 4mm 2mm;}
+        .dc .given{font-size:9.5pt;font-weight:700;margin:0 4mm 4mm;}
+        .dc .sig{margin:0 4mm;font-size:9.5pt;font-weight:700;display:flex;justify-content:space-between;align-items:flex-end;}
+        .dc .sig .who div{height:13mm;}
+        .dc .sig .who p{margin:0 0 0;}
+        .dc .seal{width:30mm;height:30mm;margin-right:14mm;}
+        @media print{#docContent{padding:0!important;}body{padding:0!important;margin:0!important;}.dc{page-break-inside:avoid;}}
       </style>
       <body>
-      <div class="cert-border">
-        <div class="cert-title">DEBENTURE CERTIFICATE</div>
-        <div class="cert-company">LANDMAXO PROPERTIES PRIVATE LIMITED</div>
-        <div class="cert-sub">(CIN: U70109TN2022PTC151180) &nbsp;|&nbsp; (Incorporated under the Companies Act, 2013)<br/>Reg. Office: 2D, 2nd Floor, Queens Court, No. 6 Montieth Road, Egmore, Chennai - 600008, Tamil Nadu, India</div>
-        <div class="cert-body">
-          <p>This is to certify that <strong>[NAME]</strong> is the Registered/Beneficial Holder of the within mentioned debenture(s) bearing the distinctive number(s) herein specified in the above-named Company subject to the Memorandum and Articles of Association of the Company and that the amount endorsed herein has been paid up on each such debenture.</p>
-          <div class="cert-highlight">
-            DEBENTURE FACE VALUE: RUPEES 10/- EACH (Nominal Value)<br/>
-            AMOUNT PAID UP PER DEBENTURE: RUPEES 10/- (Rupees Ten Only)
-          </div>
-          <table class="cert-fields" style="width:100%;">
-            <tr><td>Regd. Folio No. <strong>[FOLIO]</strong></td><td class="right">Certificate No. <strong>[CERT_NO]</strong></td></tr>
-          </table>
-          <table class="cert-fields" style="width:100%;margin-top:12px;">
-            <tr><td>Name of the Registered<br/>Debenture Holder</td><td class="bold">[NAME]</td></tr>
-            <tr><td>No. of Debenture(s) held</td><td class="bold">[NUM_DEB] ([NUM_DEB_WORDS] Only)</td></tr>
-            <tr><td>Distinctive No.(s)</td><td class="bold">[DISTINCTIVE_FROM] to [DISTINCTIVE_TO] (Both inclusive)</td></tr>
-            <tr><td>Total Value of Debenture(s)</td><td class="bold">Rs. [AMOUNT]/- ([AMOUNT_WORDS] Rupees Only)</td></tr>
-            <tr><td>Rate of Interest</td><td class="bold">12% per annum (1% per month)</td></tr>
-            <tr><td>Date of Issue</td><td class="bold">[LONG_DATE_ORDINAL]</td></tr>
-          </table>
-          <p class="mt">GIVEN under the common seal of the Company this <strong>[LONG_DATE_ORDINAL]</strong>.</p>
-          <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:60px;">
-            <div style="text-align:center;width:160px;"><div style="padding-top:4px;font-weight:700;">Director</div></div>
-            <div style="text-align:center;"><div style="width:80px;height:80px;border:2px solid #C8A951;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:8px;color:#999;">Company<br/>Seal</div></div>
-            <div style="text-align:center;width:180px;"><div style="padding-top:4px;font-weight:700;">Authorised Signatory<br/>V. Rajkumar</div></div>
-          </div>
+      <div class="dc">
+        <div class="band top"></div>
+        <h1>DEBENTURE CERTIFICATE</h1>
+        <div class="mark"><div class="w">LANDMA<span>X</span>O</div><div class="t">Invest&middot; Earn&middot; Repeat</div></div>
+        <div class="co">LANDMAXO PROPERTIES PRIVATE LIMITED</div>
+        <div class="cin">(CIN: U70109TN2022PTC151180) &nbsp;|&nbsp; (Incorporated under the Companies Act, 2013)<br/>Reg. Office: 2D, 2nd Floor, Queens Court, No. 6 Montieth Road, Egmore, Chennai - 600008,<br/>Tamil Nadu, India</div>
+        <p class="certify">This is to certify that the person(s) named in this Certificate is/are the Registered/Beneficial Holder(s) of the within mentioned debenture(s) bearing the distinctive number(s) herein specified in the above-named Company subject to the Memorandum and Articles of Association of the Company and that the amount endorsed herein has been paid up on each such share.</p>
+        <div class="black">DEBENTURE EACH OF RUPEES 10/-(Nominal Value)<br/>AMOUNT PAID-UP PER DEBENTURE RUPEES 10/-[Rupees Ten Only]</div>
+        <div class="row"><span>Regd. Folio No. [FOLIO]</span><span>Certificate No. [CERT_NO]</span></div>
+        <div class="rows">
+          <div class="r name"><div class="k">Name(s) of the Registered<br/>Debenture holder(s)</div><div class="v u">[SAL] [NAME]</div></div>
+          <div class="r"><div class="k">No. of Debenture(s) held</div><div class="v">[NUM_DEB] ([NUM_DEB_WORDS] Only)</div></div>
+          <div class="r"><div class="k">Distinctive No.(s)</div><div class="v">[DISTINCTIVE_FROM_PLAIN] to [DISTINCTIVE_TO_PLAIN] (Both inclusive)</div></div>
+          <div class="r"><div class="k">Total Value of debenture(s)</div><div class="v">[AMOUNT] ([AMOUNT_WORDS] Rupees Only)</div></div>
         </div>
+        <div class="rule"></div>
+        <p class="given">GIVEN under the common seal of the Company this [CERT_DATE]</p>
+        <div class="sig">
+          <div class="who">
+            <div></div><p>Director</p>
+            <div></div><p>Director</p>
+            <div></div><p>Authorised Signatory</p>
+          </div>
+          <div class="seal"></div>
+        </div>
+        <div class="band bottom"></div>
       </div>
       </body>`,
 
@@ -1687,6 +1785,18 @@ async function generateInvestmentDocument(
   const shortDateDash = isFinite(dateObj.getTime())
     ? `${String(dateObj.getDate()).padStart(2, '0')}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${dateObj.getFullYear()}`
     : dateStr
+  // Allotment letter date: the form's picked date (dateIso) wins, else the
+  // investment date. Certificate "GIVEN … this" date: allotment date if the
+  // investment has been allotted, else the investment date.
+  const fmtShort = (d: Date) => `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`
+  const fmtOrdinal = (d: Date, withOf: boolean) =>
+    `${ordinalSuffix(d.getDate())}${withOf ? ' of' : ''} ${d.toLocaleDateString('en-IN', { month: 'long' })}${withOf ? ',' : ''} ${d.getFullYear()}`
+  const pickedDate = overrides?.dateIso ? new Date(`${overrides.dateIso}T12:00:00`) : null
+  const letterDate = pickedDate && isFinite(pickedDate.getTime()) ? pickedDate : dateObj
+  const letterShortDate = isFinite(letterDate.getTime()) ? fmtShort(letterDate) : shortDateDash
+  const letterOrdinalDate = isFinite(letterDate.getTime()) ? fmtOrdinal(letterDate, true) : longDateOrdinal
+  const certDateObj = allotRec?.allotmentDate ? new Date(allotRec.allotmentDate) : dateObj
+  const certGivenDate = isFinite(certDateObj.getTime()) ? fmtOrdinal(certDateObj, false) : longDateOrdinal
   const safeNameCaps = escapeHtml((clientName || 'Investor').toUpperCase())
 
   // 2026-05-19: handwritten review — make the previously hard-coded
@@ -1697,8 +1807,8 @@ async function generateInvestmentDocument(
   const interestAmount = Math.round(amount * 0.12)
   const safeInterestAmount = interestAmount.toLocaleString('en-IN')
   const safeInterestWords = escapeHtml(numberToWords(interestAmount))
-  const distinctiveFrom = 1010001
-  const distinctiveTo = numDebentures > 0 ? distinctiveFrom + numDebentures - 1 : distinctiveFrom
+  const distinctiveFrom = allotRangeMatches ? allotRec!.disFrom : 1010001
+  const distinctiveTo = allotRangeMatches ? allotRec!.disTo : (numDebentures > 0 ? distinctiveFrom + numDebentures - 1 : distinctiveFrom)
   const safeDistinctiveFrom = distinctiveFrom.toLocaleString('en-IN')
   const safeDistinctiveTo = distinctiveTo.toLocaleString('en-IN')
   const safeNumDebWords = escapeHtml(numberToWords(numDebentures))
@@ -1734,6 +1844,13 @@ async function generateInvestmentDocument(
     // Order matters: replace the more specific placeholders BEFORE
     // the bare ones (NAME_CAPS before NAME) so the bare regex
     // doesn't eat the prefix of the specific name.
+    // Allotment / certificate tokens (change list 03-11-2026)
+    .replace(/\[ALLOT_DATE\]/g, escapeHtml(letterShortDate))
+    .replace(/\[MEETING_DATE\]/g, escapeHtml(letterOrdinalDate))
+    .replace(/\[TENURE_WORDS\]/g, escapeHtml(tenureInWords(tenure)))
+    .replace(/\[CERT_DATE\]/g, escapeHtml(certGivenDate))
+    .replace(/\[DISTINCTIVE_FROM_PLAIN\]/g, String(distinctiveFrom))
+    .replace(/\[DISTINCTIVE_TO_PLAIN\]/g, String(distinctiveTo))
     .replace(/\[LONG_DATE_ORDINAL\]/g, escapeHtml(longDateOrdinal))
     .replace(/\[SHORT_DATE\]/g, escapeHtml(shortDateDash))
     .replace(/\[NAME_CAPS\]/g, safeNameCaps)
@@ -1762,8 +1879,8 @@ async function generateInvestmentDocument(
     .replace(/\[DISTINCTIVE_TO\]/g, safeDistinctiveTo)
     // Allotment-table cells — defaults reproduce the previous hard-coded
     // values exactly ('1010001', raw debenture count, '1% (per month)').
-    .replace(/\[DIST_FROM_ALLOT\]/g, escapeHtml((overrides?.distinctiveFrom || '').trim() || '1010001'))
-    .replace(/\[DIST_TO_ALLOT\]/g, escapeHtml((overrides?.distinctiveTo || '').trim() || safeNumDebRaw))
+    .replace(/\[DIST_FROM_ALLOT\]/g, escapeHtml((overrides?.distinctiveFrom || '').trim() || String(distinctiveFrom)))
+    .replace(/\[DIST_TO_ALLOT\]/g, escapeHtml((overrides?.distinctiveTo || '').trim() || String(distinctiveTo)))
     .replace(/\[RATE_ALLOT\]/g, escapeHtml((overrides?.rate || '').trim() || '1% (per month)'))
 
   const fullPage = `<!DOCTYPE html><html><head><title>${escapeHtml(titles[type])} - ${safeName}</title>${css}
@@ -2309,19 +2426,21 @@ function InvestmentsTab({ showToast, statusFilter }: { showToast: (m: string, t?
     body: '', footerAddress: '', logoDataUrl: '',
   })
 
-  const openAllotmentForm = () => {
+  const openAllotmentForm = async () => {
     if (!selectedApp) return
     const amount = Number(selectedApp.final_investment_amount) || Number(selectedApp.investment_amount) || 0
     const numDeb = Math.floor(amount / 10)
+    const rec = await lookupAllotmentRecord(selectedApp)
+    const recMatches = !!rec && rec.disFrom > 0 && rec.numDeb === numDeb
     const investmentDate = selectedApp.final_investment_date || selectedApp.investment_date || selectedApp.created_at || new Date().toISOString()
     const d = new Date(investmentDate)
     const pad = (n: number) => String(n).padStart(2, '0')
     setAllotmentForm({
       dateIso: isFinite(d.getTime()) ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : '',
-      folio: `D${(selectedApp.id || '').replace(/-/g, '').slice(0, 4).toUpperCase()}`,
+      folio: selectedApp.folio_number || rec?.folio || `D${(selectedApp.id || '').replace(/-/g, '').slice(0, 4).toUpperCase()}`,
       numDebentures: String(numDeb),
-      distinctiveFrom: '1010001',
-      distinctiveTo: String(numDeb),
+      distinctiveFrom: String(recMatches ? rec!.disFrom : 1010001),
+      distinctiveTo: String(recMatches ? rec!.disTo : 1010001 + numDeb - 1),
       amount: String(amount),
       rate: '1% (per month)',
       tenure: selectedApp.tenure_preference || '3 years',
@@ -2758,6 +2877,7 @@ function InvestmentsTab({ showToast, statusFilter }: { showToast: (m: string, t?
                     const { dateIso, ...rest } = allotmentForm
                     await generateInvestmentDocument('allotment', selectedApp, {
                       ...rest,
+                      dateIso,
                       // Convert the picker's ISO date to the letter's display
                       // format (e.g. "10 June 2026"). T12:00 keeps the day
                       // stable across timezones.

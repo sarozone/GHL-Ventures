@@ -5,7 +5,7 @@ import {
   Shield, CheckCircle2, XCircle, Clock, AlertTriangle,
   Eye, FileText, Scale, History, Flag, ArrowUpRight,
   Filter, Search, Calendar, User, ChevronRight, AlertCircle,
-  Gavel, BookOpen, ShieldAlert, ShieldCheck, Download,
+  Gavel, BookOpen, ShieldAlert, ShieldCheck, Download, Pencil,
 } from 'lucide-react'
 import AdminGlass from '../shared/AdminGlass'
 import AdminDataTable, { type Column } from '../shared/AdminDataTable'
@@ -15,6 +15,7 @@ import AdminKPICard from '../shared/AdminKPICard'
 import AdminEmptyState from '../shared/AdminEmptyState'
 import { fetchApprovals, fetchRiskFlags, fetchAuditLog, updateRow, fetchKYCDocuments, approveClientKYC, rejectClientKYC, approveKYCStep, rejectKYCStep } from '@/lib/supabase/adminDataService'
 import GrievancesTab from './GrievancesTab'
+import AdminAddKYCModal from './AdminAddKYCModal'
 import { formatDate, formatTimeAgo } from '@/lib/admin/adminHooks'
 import type { Approval, RiskFlag, ApprovalStatus } from '@/lib/admin/adminTypes'
 
@@ -148,6 +149,23 @@ function KYCQueueTab({ kycQueue, showToast, onRefresh, initialStatusFilter }: { 
   useEffect(() => { if (initialStatusFilter) setStatusFilter(initialStatusFilter) }, [initialStatusFilter])
   const [selectedKYC, setSelectedKYC] = useState<any | null>(null)
   const [viewingKYC, setViewingKYC] = useState<any | null>(null)
+  // Edit a single KYC step from its card (change list 03-11-2026).
+  const [editKYC, setEditKYC] = useState<{ clientId: string; clientName: string; userId: string | null; email: string; phone: string; stage: 'basic' | 'identity' | 'bank' | 'demat' | 'nominee'; type: string } | null>(null)
+  const STEP_STAGE: Record<string, 'basic' | 'identity' | 'bank' | 'demat' | 'nominee'> = {
+    'Basic Details': 'basic', 'Identity Details': 'identity', 'Bank Details': 'bank',
+    'Demat Account': 'demat', 'Nominee Details': 'nominee',
+  }
+  const openEditKYC = async (group: any, item: any) => {
+    const stage = STEP_STAGE[item.type]
+    if (!stage) return
+    let userId: string | null = null
+    try {
+      const { supabase } = await import('@/lib/supabase/client')
+      const { data } = await (supabase as any).from('clients').select('user_id').eq('id', group.clientId).maybeSingle()
+      userId = data?.user_id || null
+    } catch { /* modal falls back to the KYC rows' own user_id */ }
+    setEditKYC({ clientId: group.clientId, clientName: group.clientName, userId, email: group.clientEmail || '', phone: item.clientPhone || '', stage, type: item.type })
+  }
   const [viewingDetail, setViewingDetail] = useState<any | null>(null)
   const [processing, setProcessing] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
@@ -430,12 +448,23 @@ function KYCQueueTab({ kycQueue, showToast, onRefresh, initialStatusFilter }: { 
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-medium text-white">{item.type}</span>
-                      <AdminBadge
-                        label={item.status}
-                        variant={item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'error' : item.status === 'submitted' ? 'warning' : 'neutral'}
-                        size="sm"
-                        dot
-                      />
+                      <div className="flex items-center gap-1.5">
+                        {STEP_STAGE[item.type] && (
+                          <button
+                            onClick={() => openEditKYC(group, item)}
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-gray-400 hover:text-white hover:bg-white/[0.08] transition-colors"
+                            title={`Edit ${item.type}`}
+                          >
+                            <Pencil className="w-3 h-3" /> Edit
+                          </button>
+                        )}
+                        <AdminBadge
+                          label={item.status}
+                          variant={item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'error' : item.status === 'submitted' ? 'warning' : 'neutral'}
+                          size="sm"
+                          dot
+                        />
+                      </div>
                     </div>
                     <p className="text-[10px] text-gray-500">{item.fileName}</p>
                     {item.uploadDate && <p className="text-[10px] text-gray-600 mt-0.5">{formatDate(item.uploadDate)}</p>}
@@ -665,6 +694,32 @@ function KYCQueueTab({ kycQueue, showToast, onRefresh, initialStatusFilter }: { 
           </div>
         )}
       </AdminModal>
+
+      {/* Edit one KYC step — same form as Users → Update KYC, opened on
+          that step. Saving keeps the step's current review status. */}
+      {editKYC && (
+        <AdminModal
+          isOpen={!!editKYC}
+          onClose={() => { setEditKYC(null); onRefresh() }}
+          title={`Edit ${editKYC.type} — ${editKYC.clientName}`}
+          subtitle="Correct the details and click Save on this step. The step's approval status is kept."
+          maxWidth="max-w-4xl"
+          footer={<ModalButton onClick={() => { setEditKYC(null); onRefresh() }}>Close</ModalButton>}
+        >
+          <AdminAddKYCModal
+            key={`${editKYC.clientId}-${editKYC.stage}`}
+            clientId={editKYC.clientId}
+            userId={editKYC.userId}
+            initialName={editKYC.clientName}
+            initialEmail={editKYC.email}
+            initialPhone={editKYC.phone}
+            initialStage={editKYC.stage}
+            editMode
+            showToast={showToast}
+            onComplete={() => onRefresh()}
+          />
+        </AdminModal>
+      )}
     </div>
   )
 }
