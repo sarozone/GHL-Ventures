@@ -1505,21 +1505,18 @@ async function generateInvestmentDocument(
     // Authorised Signatory signature space.
     certificate: `${css}
       <style>
-        @page{size:A4;margin:8mm;}
-        .dc{position:relative;max-width:190mm;min-height:262mm;margin:0 auto;padding:0 14mm 20mm;
-            border-left:3px solid #2b2b2b;border-right:3px solid #2b2b2b;background:#fff;
+        /* 03-11-2026: certificate drawn on the supplied Landmaxo frame
+           artwork (public/images/documents/debenture-certificate-bg.jpg) —
+           a full-bleed A4 <img> (images always print, CSS backgrounds only
+           with "Background graphics" ticked), content laid inside the frame. */
+        @page{size:A4;margin:0;}
+        #docContent{padding:0!important;max-width:210mm!important;}
+        .dc{position:relative;width:210mm;height:297mm;margin:0 auto;overflow:hidden;background:#fff;
             font-family:'Open Sans','Segoe UI',Arial,sans-serif;color:#111;box-sizing:border-box;
             -webkit-print-color-adjust:exact;print-color-adjust:exact;}
-        .dc .band{height:15mm;margin:0 -14mm;position:relative;overflow:hidden;
-            background:linear-gradient(180deg,#1a0505 0%,#6e0f0f 45%,#9b1c1c 55%,#2a0606 100%);}
-        .dc .band::after{content:'';position:absolute;left:12%;right:12%;height:9mm;border-radius:0 0 50% 50%/0 0 100% 100%;
-            background:linear-gradient(180deg,#ffffff 0%,#f1e3e3 100%);}
-        .dc .band.top::after{top:-1mm;opacity:.0;}
-        .dc .band.top{border-radius:0 0 8mm 8mm;}
-        .dc .band.bottom{position:absolute;left:0;right:0;bottom:0;margin:0;border-radius:8mm 8mm 0 0;}
-        .dc .band::before{content:'';position:absolute;left:18%;right:18%;top:3mm;height:6mm;border-radius:6mm;
-            background:linear-gradient(180deg,rgba(255,255,255,.15),rgba(255,255,255,0));}
-        .dc h1{font-size:25pt;font-weight:800;text-align:center;letter-spacing:1px;margin:7mm 0 4mm;}
+        .dc .bg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;z-index:0;}
+        .dc .in{position:relative;z-index:1;padding:25mm 19mm 0;}
+        .dc h1{font-size:25pt;font-weight:800;text-align:center;letter-spacing:1px;margin:0 0 4mm;}
         .dc .mark{text-align:center;margin-bottom:4mm;}
         .dc .mark .w{font-size:24pt;font-weight:800;letter-spacing:5px;color:#4a8a2c;font-family:Arial,sans-serif;}
         .dc .mark .w span{color:#E8A317;}
@@ -1528,7 +1525,7 @@ async function generateInvestmentDocument(
         .dc .cin{text-align:center;font-size:8pt;font-weight:700;line-height:1.45;margin-bottom:5mm;}
         .dc .certify{font-size:9.5pt;font-weight:700;line-height:1.5;text-align:justify;margin:0 0 5mm;}
         .dc .black{background:#151515;color:#fff;text-align:center;font-weight:700;font-size:11pt;line-height:1.55;
-            padding:3mm 4mm;margin:0 -14mm 6mm;}
+            padding:3mm 4mm;margin:0 -10mm 6mm;}
         .dc .row{display:flex;justify-content:space-between;font-size:9.5pt;font-weight:700;margin:0 4mm 5mm;}
         .dc .rows{margin:0 4mm;font-size:9.5pt;}
         .dc .rows .r{display:flex;align-items:flex-start;margin-bottom:2.2mm;}
@@ -1539,14 +1536,15 @@ async function generateInvestmentDocument(
         .dc .rule{border-top:1.5px solid #222;margin:5mm 4mm 2mm;}
         .dc .given{font-size:9.5pt;font-weight:700;margin:0 4mm 4mm;}
         .dc .sig{margin:0 4mm;font-size:9.5pt;font-weight:700;display:flex;justify-content:space-between;align-items:flex-end;}
-        .dc .sig .who div{height:13mm;}
-        .dc .sig .who p{margin:0 0 0;}
+        .dc .sig .who div{height:14mm;}
+        .dc .sig .who p{margin:0;}
         .dc .seal{width:30mm;height:30mm;margin-right:14mm;}
-        @media print{#docContent{padding:0!important;}body{padding:0!important;margin:0!important;}.dc{page-break-inside:avoid;}}
+        @media print{body{padding:0!important;margin:0!important;background:#fff!important;}.dc{page-break-inside:avoid;}}
       </style>
       <body>
       <div class="dc">
-        <div class="band top"></div>
+        <img class="bg" src="[CERT_BG]" alt="" />
+        <div class="in">
         <h1>DEBENTURE CERTIFICATE</h1>
         <div class="mark"><div class="w">LANDMA<span>X</span>O</div><div class="t">Invest&middot; Earn&middot; Repeat</div></div>
         <div class="co">LANDMAXO PROPERTIES PRIVATE LIMITED</div>
@@ -1570,7 +1568,7 @@ async function generateInvestmentDocument(
           </div>
           <div class="seal"></div>
         </div>
-        <div class="band bottom"></div>
+        </div>
       </div>
       </body>`,
 
@@ -1849,6 +1847,9 @@ async function generateInvestmentDocument(
     .replace(/\[MEETING_DATE\]/g, escapeHtml(letterOrdinalDate))
     .replace(/\[TENURE_WORDS\]/g, escapeHtml(tenureInWords(tenure)))
     .replace(/\[CERT_DATE\]/g, escapeHtml(certGivenDate))
+    // Absolute URL — the document opens in an about:blank print window
+    // where a relative /images/... path would not resolve.
+    .replace(/\[CERT_BG\]/g, `${typeof window !== 'undefined' ? window.location.origin : 'https://ghlindiaventures.com'}/images/documents/debenture-certificate-bg.jpg`)
     .replace(/\[DISTINCTIVE_FROM_PLAIN\]/g, String(distinctiveFrom))
     .replace(/\[DISTINCTIVE_TO_PLAIN\]/g, String(distinctiveTo))
     .replace(/\[LONG_DATE_ORDINAL\]/g, escapeHtml(longDateOrdinal))
