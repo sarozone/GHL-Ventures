@@ -41,6 +41,21 @@ export async function GET(request: NextRequest) {
       global: userToken ? { headers: { Authorization: `Bearer ${userToken}` } } : undefined,
     })
 
+    // sbClient is handed the service-role key but then has the caller's JWT put
+    // in its Authorization header, and PostgREST decides the role from that
+    // header - so every query through it actually runs as the signed-in user
+    // and RLS applies. clients has no policy letting a partner read the people
+    // they referred ("Clients read own" / "clients_select_own" only), which is
+    // why the referral network came back empty and the response fell back to
+    // the referrals lead table.
+    //
+    // The network reads therefore go through a separate service-role client.
+    // That is safe only because every one of them is narrowed to
+    // effectivePartnerId, which is resolved from the verified session below.
+    const sbAdmin = serviceRoleKey
+      ? createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } })
+      : sbClient
+
     // Verify authenticated caller if token provided
     let authUser: any = null
     if (userToken) {
@@ -63,7 +78,7 @@ export async function GET(request: NextRequest) {
     let clientRecord: any = null
     if (authUser?.id) {
       try {
-        const { data: client } = await sbClient
+        const { data: client } = await sbAdmin
           .from('clients')
           .select('id, user_id, client_code, ghl_id, full_name, email, phone, kyc_status, total_invested, notes')
           .eq('user_id', authUser.id)
@@ -74,9 +89,31 @@ export async function GET(request: NextRequest) {
 
     const isProduction = process.env.NODE_ENV === 'production' || process.env.CONTEXT === 'production'
 
-    // Security: In production, non-admin users can ONLY view their authentic authenticated partner records.
-    // previewPartnerId is strictly restricted to development/preview environments.
-    const effectivePartnerId = (previewPartnerId && previewPartnerId.length > 2 && previewPartnerId !== 'GHL-PARTNER')
+    // previewId used to be honoured for anyone who passed it: isProduction was
+    // computed and never read, so ?previewId=<someone else's code> returned
+    // that partner's network. RLS masked most of it; now that the reads run as
+    // service role it would be a full leak, so the parameter is gated here.
+    // Admin "view as" is its one legitimate use, so admins keep it.
+    let callerIsAdmin = false
+    if (authUser?.id && serviceRoleKey) {
+      try {
+        const { data: prof } = await sbAdmin
+          .from('profiles')
+          .select('*')
+          .eq('id', authUser.id)
+          .maybeSingle()
+        const roleText = String(
+          (prof as any)?.role || (prof as any)?.user_role || (prof as any)?.account_type || ''
+        ).toLowerCase()
+        callerIsAdmin = (prof as any)?.is_admin === true
+          || roleText.includes('admin')
+          || roleText === 'staff'
+      } catch { /* non-blocking: stays false, which is the safe answer */ }
+    }
+
+    const previewAllowed = Boolean(previewPartnerId) && (callerIsAdmin || !isProduction)
+
+    const effectivePartnerId = (previewAllowed && previewPartnerId && previewPartnerId.length > 2 && previewPartnerId !== 'GHL-PARTNER')
       ? previewPartnerId
       : (clientRecord?.ghl_id || clientRecord?.client_code || 'GHL-PARTNER')
 
@@ -112,7 +149,7 @@ export async function GET(request: NextRequest) {
       }
 
       if (matchConditions.length > 0) {
-        const { data: sumRows } = await sbClient
+        const { data: sumRows } = await sbAdmin
           .from('referrer_summary')
           .select('*')
           .or(matchConditions.join(','))
@@ -269,7 +306,7 @@ export async function GET(request: NextRequest) {
 
     if (isRealPartnerId) {
       try {
-        const { data: referredClients } = await sbClient
+        const { data: referredClients } = await sbAdmin
           .from('clients')
           .select('id, client_code, ghl_id, full_name, email, phone, city, total_invested, kyc_status, joined_at, created_at')
           .or(`referred_by.eq.${effectivePartnerId},referred_by.ilike.%${effectivePartnerId}%`)
@@ -278,13 +315,40 @@ export async function GET(request: NextRequest) {
 
         if (referredClients && referredClients.length > 0) {
           // Map referred clients into referrals structure if not already present
-          const existingEmailsMap = new Set(rawReferrals.map(r => (r.referee_email || '').toLowerCase()))
+          // The same person is usually already in rawReferrals as a lead row
+          // from the referrals table, and that row carries no ghl_id - the
+          // clients row is the authoritative one. Skipping on an email clash
+          // left the lead row standing, so the list rendered a hashed
+          // placeholder id that matched no client and no investment. Fill the
+          // lead row in from the client record instead; only push when the
+          // person is genuinely new.
+          const byEmail = new Map<string, any>()
+          for (const r of rawReferrals as any[]) {
+            const k = String(r.referee_email || '').toLowerCase().trim()
+            if (k) byEmail.set(k, r)
+          }
           for (const rc of referredClients) {
             // NEVER include the partner themselves
             if (clientRecord?.id && rc.id === clientRecord.id) continue
             if (partnerEmail && rc.email && rc.email.toLowerCase().trim() === partnerEmail.toLowerCase().trim()) continue
 
-            if (rc.email && !existingEmailsMap.has(rc.email.toLowerCase())) {
+            const key = String(rc.email || '').toLowerCase().trim()
+            const existing = key ? byEmail.get(key) : null
+            if (existing) {
+              existing.client_id = rc.id
+              existing.user_id = rc.ghl_id || rc.client_code || existing.user_id
+              existing.ghl_id = rc.ghl_id || existing.ghl_id
+              existing.client_code = rc.client_code || existing.client_code
+              if (!existing.referee_name || existing.referee_name === 'Referral Contact') {
+                existing.referee_name = rc.full_name || existing.referee_name
+              }
+              if (!existing.referee_phone || existing.referee_phone === '\u2014') {
+                existing.referee_phone = rc.phone || existing.referee_phone
+              }
+              continue
+            }
+
+            if (key) {
               const invested = Number(rc.total_invested) || 0
               const rate = partnerRole === 'MCP' ? 4.5 : partnerRole === 'CPL' ? 3.5 : (invested > 50000000 ? 4.0 : 3.0)
               const commission = (invested * rate) / 100
@@ -306,7 +370,7 @@ export async function GET(request: NextRequest) {
                 commission_status: invested > 0 ? 'accrued' : 'pending',
                 created_at: rc.joined_at || rc.created_at || new Date().toISOString(),
               })
-              existingEmailsMap.add(rc.email.toLowerCase())
+              byEmail.set(key, rawReferrals[rawReferrals.length - 1])
             }
           }
         }
@@ -327,7 +391,7 @@ export async function GET(request: NextRequest) {
           .filter((c: string) => /^(CPL|CP)GHL/i.test(c))
 
         if (cpCodes.length > 0) {
-          const { data: indirectClients } = await sbClient
+          const { data: indirectClients } = await sbAdmin
             .from('clients')
             .select('id, client_code, ghl_id, full_name, email, phone, city, total_invested, kyc_status, joined_at, created_at, referred_by')
             .in('referred_by', cpCodes)
@@ -370,7 +434,7 @@ export async function GET(request: NextRequest) {
 
     // 3b. Also supplement from leads table where metadata->>referral_code matches partner ID
     try {
-      const { data: refLeads } = await sbClient
+      const { data: refLeads } = await sbAdmin
         .from('leads')
         .select('id, name, email, phone, city, status, created_at, metadata')
         .order('created_at', { ascending: false })
@@ -531,20 +595,13 @@ export async function GET(request: NextRequest) {
 
     // 8. Format referrals for frontend table
     const formattedReferrals = rawReferrals.map((r, i) => {
-      let candidateId = r.client_code || r.ghl_id || (typeof r.id === 'string' && r.id.startsWith('GHL') ? r.id : '')
-      if (!candidateId || candidateId.startsWith('ref-') || candidateId === effectivePartnerId || candidateId === 'MCPGHL920237') {
-        const cEmail = (r.referee_email || '').toLowerCase()
-        const cName = (r.referee_name || '').toLowerCase()
-        if (cEmail === 'testmcp@gmail.com' || cName === 'testmcp') {
-          candidateId = 'GHL362152'
-        } else if (cEmail) {
-          const hashNum = Math.abs(cEmail.split('').reduce((acc: number, ch: string) => (acc * 31 + ch.charCodeAt(0)) | 0, 0)) % 900000 + 100000
-          candidateId = `GHL${hashNum}`
-        } else if (r.client_id) {
-          candidateId = `GHL${String(r.client_id).replace(/\D/g, '').slice(0, 6)}`
-        } else {
-          candidateId = `GHL${362150 + i}`
-        }
+      // The id shown here is the investor's real GHL id or nothing. This used
+      // to fall back to a hash of their email, which produced a plausible but
+      // fictional id - it matched no client and no investment application, and
+      // it hid the fact that the clients row had never been read at all.
+      let candidateId = String(r.user_id || r.ghl_id || r.client_code || '').trim()
+      if (candidateId.startsWith('ref-') || candidateId === effectivePartnerId) {
+        candidateId = ''
       }
 
       const dStr = r.created_at || r.joined_at
@@ -552,8 +609,8 @@ export async function GET(request: NextRequest) {
       const hyphenDate = dStr ? new Date(dStr).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-') : '—'
 
       return {
-        id: candidateId,
-        userId: candidateId,
+        id: candidateId || `row-${i}`,
+        userId: candidateId || '\u2014',
         clientId: r.client_id || r.id,
         refereeName: r.referee_name || 'Referral Contact',
         refereeEmail: r.referee_email || '—',
@@ -580,15 +637,23 @@ export async function GET(request: NextRequest) {
     // 9. Fetch Network Investments (For Total Investors Page)
     const networkInvestments: any[] = []
     try {
-      const clientIds = rawReferrals.map((r: any) => r.client_id || r.id).filter(Boolean)
+      // client_id is a uuid column. A lead row's id is not a uuid, and one of
+      // those in the .in() makes PostgREST reject the entire request with
+      // 22P02, so every investment vanishes rather than just that row's.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      const clientIds = Array.from(new Set(
+        rawReferrals
+          .map((r: any) => r.client_id || r.id)
+          .filter((v: any) => UUID_RE.test(String(v || '')))
+      ))
       if (clientIds.length > 0) {
-        const { data: apps } = await sbClient
+        const { data: apps } = await sbAdmin
           .from('investment_applications')
           .select('id, client_id, user_id, fund_vehicle, investment_amount, investment_date, maturity_date, tenure_preference, status, created_at, updated_at')
           .in('client_id', clientIds)
           .order('investment_date', { ascending: false })
 
-        const { data: payouts } = await sbClient
+        const { data: payouts } = await sbAdmin
           .from('monthly_payouts')
           .select('investment_id, client_id, payment_status, payment_date')
           .in('client_id', clientIds)
