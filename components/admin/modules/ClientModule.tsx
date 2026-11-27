@@ -1088,6 +1088,7 @@ function ClientListTab({
           { label: 'Relationship Manager', value: (c) => c.assignedRM || '' },
           { label: 'Joined', value: (c) => (c.joinDate ? formatDate(c.joinDate) : '') },
         ]}
+        exportDateValue={(c) => (c as any).joinedAt || c.joinDate}
         exportFileName={`clients_${new Date().toISOString().slice(0, 10)}`}
         title="All Clients"
         emptyMessage="No clients found"

@@ -911,10 +911,27 @@ function LeadListTab({ leads, onViewLead, onDeleteLead, showToast }: { leads: Le
       <AdminDataTable<Lead>
         columns={columns}
         data={leads}
-        searchKeys={['name', 'email', 'source', 'stage']}
+        searchKeys={['name', 'email', 'phone', 'source', 'stage']}
         searchPlaceholder="Search leads..."
         onRowClick={onViewLead}
         exportable
+        // Export with phone + email (not visible as columns). ' prefix keeps
+        // the phone as text in Excel so +91 / leading digits survive.
+        exportColumns={[
+          { label: 'Lead', value: (l) => l.name },
+          { label: 'Phone', value: (l) => (l.phone ? `'${l.phone}` : '') },
+          { label: 'Email', value: (l) => l.email || '' },
+          { label: 'Stage', value: (l) => STAGE_CONFIG[l.stage]?.label || l.stage },
+          { label: 'Deal Value', value: (l) => l.value ?? 0 },
+          { label: 'Probability', value: (l) => l.probability ?? 0 },
+          { label: 'AI Score', value: (l) => l.aiScore ?? 0 },
+          { label: 'Source', value: (l) => l.source || '' },
+          { label: 'Message', value: (l) => l.notes || '' },
+          { label: 'Created', value: (l) => l.createdDate || '' },
+          { label: 'Last Contact', value: (l) => (l.lastTouched || '').slice(0, 10) },
+        ]}
+        exportDateValue={(l) => l.createdDate}
+        exportFileName={`leads_${new Date().toISOString().slice(0, 10)}`}
         title="All Leads"
       />
     </AdminGlass>
