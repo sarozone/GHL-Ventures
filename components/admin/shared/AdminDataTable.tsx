@@ -27,6 +27,10 @@ interface AdminDataTableProps<T> {
   // columns' keys (which misses data that only lives in a render()).
   exportColumns?: { label: string; value: (row: T) => unknown }[]
   exportFileName?: string
+  // Optional: date of each row (ISO / YYYY-MM-DD). When given, From / To
+  // date inputs appear beside Export and only rows inside that range
+  // (inclusive) are exported. The table itself is not filtered.
+  exportDateValue?: (row: T) => string | null | undefined
   title?: string
   actions?: React.ReactNode
 }
@@ -50,6 +54,7 @@ export default function AdminDataTable<T extends Record<string, any>>({
   exportable = true,
   exportColumns,
   exportFileName,
+  exportDateValue,
   title,
   actions,
 }: AdminDataTableProps<T>) {
@@ -57,6 +62,8 @@ export default function AdminDataTable<T extends Record<string, any>>({
   const [sortKey, setSortKey] = useState<string | null>(null)
   const [sortDir, setSortDir] = useState<SortDir>(null)
   const [page, setPage] = useState(0)
+  const [exportFrom, setExportFrom] = useState('')
+  const [exportTo, setExportTo] = useState('')
 
   // ── Search ───────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -112,10 +119,21 @@ export default function AdminDataTable<T extends Record<string, any>>({
       ? exportColumns
       : columns.filter(c => c.label).map(c => ({ label: c.label, value: (row: T) => row[c.key] }))
     const headers = layout.map(c => cell(c.label)).join(',')
-    const rows = sorted.map(row => layout.map(c => cell(c.value(row))).join(',')).join('\n')
+    let exportRows = sorted
+    if (exportDateValue && (exportFrom || exportTo)) {
+      exportRows = sorted.filter(row => {
+        const d = String(exportDateValue(row) || '').slice(0, 10)
+        if (!d) return false
+        if (exportFrom && d < exportFrom) return false
+        if (exportTo && d > exportTo) return false
+        return true
+      })
+    }
+    const rows = exportRows.map(row => layout.map(c => cell(c.value(row))).join(',')).join('\n')
     const bom = '\uFEFF'
     const blob = new Blob([`${bom}${headers}\n${rows}`], { type: 'text/csv;charset=utf-8' })
-    await saveBlobAs(blob, `${exportFileName || title || 'export'}.csv`)
+    const range = exportDateValue && (exportFrom || exportTo) ? `_${exportFrom || 'start'}_to_${exportTo || 'today'}` : ''
+    await saveBlobAs(blob, `${exportFileName || title || 'export'}${range}.csv`)
   }
 
   return (
@@ -135,6 +153,35 @@ export default function AdminDataTable<T extends Record<string, any>>({
                   placeholder={searchPlaceholder}
                   className="pl-8 pr-3 py-1.5 text-xs bg-white/[0.04] border border-white/[0.08] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-brand-red/40 focus:ring-1 focus:ring-brand-red/20 w-48 admin-input-glow"
                 />
+              </div>
+            )}
+            {exportable && exportDateValue && (
+              <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
+                <span>From</span>
+                <input
+                  type="date"
+                  value={exportFrom}
+                  max={exportTo || undefined}
+                  onChange={e => setExportFrom(e.target.value)}
+                  title="Export from date"
+                  className="px-2 py-1 text-xs bg-white/[0.04] border border-white/[0.08] rounded-lg text-white focus:outline-none focus:border-brand-red/40 [color-scheme:dark]"
+                />
+                <span>To</span>
+                <input
+                  type="date"
+                  value={exportTo}
+                  min={exportFrom || undefined}
+                  onChange={e => setExportTo(e.target.value)}
+                  title="Export to date"
+                  className="px-2 py-1 text-xs bg-white/[0.04] border border-white/[0.08] rounded-lg text-white focus:outline-none focus:border-brand-red/40 [color-scheme:dark]"
+                />
+                {(exportFrom || exportTo) && (
+                  <button
+                    onClick={() => { setExportFrom(''); setExportTo('') }}
+                    className="px-1.5 text-gray-500 hover:text-white"
+                    title="Clear dates"
+                  >✕</button>
+                )}
               </div>
             )}
             {exportable && (
